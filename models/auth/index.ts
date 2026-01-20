@@ -28,7 +28,8 @@ export function isAuthenticated(
     ) as JwtPayload;
 
     // Optional: attach user to request
-    (req as any).userId = decoded.userId;
+    req.userId = decoded.userId; // ✅ FIXED
+    
     next(); 
   } catch (error) {
     return res.status(401).json({ error: 'Unauthorized' });

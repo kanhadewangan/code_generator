@@ -22,9 +22,9 @@ user.post('/register',async (req, res) => {
         });
 
         const token = jwt.sign({ userId: newUser.id}, process.env.JSON_WEB_TOKEN_SECRET as string, {
-            expiresIn: '1h',
+            expiresIn: '1d',
         });
-        res.status(201).json({ token });
+        res.status(201).json({ "message":"User registered successfully" });
     } catch (error) {
         res.status(500).json({ error: 'Error creating user' });
     }
@@ -34,10 +34,10 @@ user.post('/register',async (req, res) => {
 user.post('/login',async(req,res)=>{
     const { email ,password}: UserLoginType = req.body;
     try{
-        const user  = await prisma.user.findFirst({
-            where:{ email , password}
+        const user  = await prisma.user.findUnique({
+            where:{ email }
         })
-        if(!user  ){
+        if(!user){
             return  res.status(401).json({ error: 'Invalid email or password' });
         }
         const isPasswordValid = await bcrypt.compare(password,user.password);
@@ -45,9 +45,9 @@ user.post('/login',async(req,res)=>{
             return res.status(401).json({ error: 'Invalid email or password' });
         }
         const token = jwt.sign({ userId: user.id}, process.env.JSON_WEB_TOKEN_SECRET as string, {
-            expiresIn: '1h',
+            expiresIn: '1d',
         });
-        res.status(200).json({ token });
+        res.status(200).json({ "message":"User logged in successfully" ,"Token":token  });
     }
     catch(error){
         res.status(500).json({ error: 'Error logging in user' });
