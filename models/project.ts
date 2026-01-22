@@ -8,122 +8,118 @@
   import s3Client from "../services/bucket";
   import { PutObjectCommand } from "@aws-sdk/client-s3";
   import crypto from "crypto";
+  import { orchestrator,codeGenerator } from "../services/llm";
   import mime from "mime-types";
   dotenv.config({
     path: ".env",
   });
 
-  project.post(
-    "/create",
-    isAuthenticated,
-    async (req: Request, res: Response) => {
-      const { title, description, initialPrompt } = req.body;
-      if (!req.userId) {
-        return res.status(401).json({ error: "Unauthorized" });
-      }
 
-      try {
+
+project.post(
+  "/create",
+  isAuthenticated,
+  async (req: Request, res: Response) => {
+    const { title, description, initialPrompt } = req.body;
+
+    if (!req.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    try {
+      // ---------- PHASE 1: APP CODE ----------
       const appResponse = await client.chat.completions.create({
-    model: process.env.MODEL_NAME!,
-    messages: [
-      {
-        role: "user",
-        content: `You are a project generation orchestrator.
+        model: process.env.MODEL_NAME!,
+        messages: [
+          {
+            role: "user",
+            content: codeGenerator(title, description, initialPrompt),
+          },
+        ],
+        response_format: { type: "json_object" },
+      });
 
-Your task is to generate a project based on the following requirements:
-- Title: ${title}
-- Description: ${description}
-- Initial Prompt: ${initialPrompt}
-
-Return ONLY valid JSON with this schema:
-{
-  "files": [{ "path": "string", "content": "string" }]
-}
-
-IMPORTANT:
-- Generate ONLY application source code
-- Do NOT generate Dockerfile, docker-compose.yml, or .dockerignore
-- Each file must have a valid path and content
-- Ensure all files are properly formatted`
+      if (!appResponse.choices.length) {
+        throw new Error("No response from app generator");
       }
-    ],
-    response_format: { type: "json_object" }
-  });
-        const aiResponse = appResponse as any;
-        if (!aiResponse.choices.length) {
-          return res.status(500).json({ error: "No response from AI model" });
+
+      const appRaw = appResponse?.choices[0].message.content!;
+      const appData = JSON.parse(appRaw);
+
+      if (!Array.isArray(appData.files)) {
+        throw new Error("Invalid app output: files[] missing");
+      }
+
+      // ---------- PHASE 2: INFRA ----------
+      const infraResponse = await client.chat.completions.create({
+        model: process.env.MODEL_NAME!,
+        messages: [
+          {
+            role: "user",
+            content: orchestrator(title),
+          },
+        ],
+        response_format: { type: "json_object" },
+      });
+
+      if (!infraResponse.choices.length) {
+        throw new Error("No response from infra generator");
+      }
+      if(!infraResponse?.choices[0].message.content){
+        throw new Error("Empty infra response content");
+      }
+
+      const infraRaw = infraResponse.choices[0].message.content!;
+      const infraData = JSON.parse(infraRaw);
+
+      if (!Array.isArray(infraData.files)) {
+        throw new Error("Invalid infra output: files[] missing");
+      }
+
+      // ---------- MERGE ----------
+      const allFiles = [...appData.files, ...infraData.files];
+
+      // ---------- VALIDATE INFRA ----------
+      const requiredFiles = ["Dockerfile", ".dockerignore", "docker-compose.yml"];
+      for (const f of requiredFiles) {
+        if (!allFiles.some(file => file.path === f)) {
+          throw new Error(`Missing infra file: ${f}`);
         }
+      }
 
-        const raw = aiResponse.choices[0].message.content as string;
+      // ---------- UPLOAD ----------
+      const projectId = crypto.randomUUID();
 
-        let data;
-        try {
-          data = JSON.parse(raw);
-          for (const f of data.files) {
-    if (
-      f.content.includes("Dockerfile\n") ||
-      f.content.includes(".dockerignore") ||
-      f.content.includes("docker-compose")
-    ) {
-      throw new Error(
-        `Invalid AI output: multiple files detected inside ${f.path}`
-      );
+      for (const file of allFiles) {
+        await s3Client.send(
+          new PutObjectCommand({
+            Bucket: process.env.AWS_S3_BUCKET_NAME!,
+            Key: `projects/${projectId}/files/${file.path}`,
+            Body: file.content,
+            ContentType: mime.lookup(file.path) || "text/plain",
+          })
+        );
+      }
+
+      const project = await prisma.projects.create({
+        data: {
+          id: projectId,
+          title,
+          description,
+          initialPrompt,
+          userId: req.userId,
+          projectLink: `projects/${projectId}/files`,
+        },
+      });
+
+      res.json({ project });
+
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Project generation failed" });
     }
   }
-
-        } catch {
-          console.error("INVALID AI JSON:", raw.slice(0, 500));
-          return res.status(500).json({ error: "Invalid JSON from AI model" });
-        }
-
-        if (!Array.isArray(data.files)) {
-          throw new Error("Invalid AI response format: missing files[]");
-        }
-
-        // const requiredFiles = ["Dockerfile", ".dockerignore", "docker-compose.yml"];
-        // for (const file of requiredFiles) {
-        //   if (!data.files.some((f: any) => f.path === file)) {
-        //     throw new Error(`Missing required sandbox file: ${file}`);
-        //   }
-        // }
-
-        const projectId = crypto.randomUUID();
-        const uploadedFiles = [];
-
-        for (const file of data.files) {
-          const key = `projects/${projectId}/files/${file.path}`;
-
-          await s3Client.send(
-            new PutObjectCommand({
-              Bucket: process.env.AWS_S3_BUCKET_NAME!,
-              Key: key,
-              Body: file.content,
-              ContentType: mime.lookup(file.path) || "text/plain",
-            })
-          );
-
-          uploadedFiles.push(key);
-        }
-
-        const newProject = await prisma.projects.create({
-          data: {
-            id: projectId,
-            title,
-            description,
-            initialPrompt,
-            userId: req.userId,
-            projectLink: `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_S3_BUCKET_REGION}.amazonaws.com/projects/${projectId}/files/`,
-          },
-        });
-
-        res.json({ project: newProject });
-
-      } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: "Error creating project" });
-      }
-    }
-  );
+);
 
 
   project.get("/auth-check", isAuthenticated, async (req, res) => {
