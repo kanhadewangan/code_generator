@@ -11,4 +11,5 @@ const client = new OpenAI({
 });
 
 
+
 export default client;
