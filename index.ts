@@ -1,9 +1,6 @@
 import express from 'express';
 const app = express();
-import prisma from './prisma/src/prisma';
-import bcrypt from 'bcrypt';
 import dotenv from 'dotenv';
-import jwt from 'jsonwebtoken';
 import user from './models/user';
 import project from './models/project';
 dotenv.config({

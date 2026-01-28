@@ -21,9 +21,7 @@ user.post('/register',async (req, res) => {
             },
         });
 
-        const token = jwt.sign({ userId: newUser.id}, process.env.JSON_WEB_TOKEN_SECRET as string, {
-            expiresIn: '1d',
-        });
+       
         res.status(201).json({ "message":"User registered successfully" });
     } catch (error) {
         res.status(500).json({ error: 'Error creating user' });

@@ -129,4 +129,25 @@ project.post(
     console.log("Authenticated user ID:", req.userId);
   });
 
+  project.get('/public_link',isAuthenticated,async(req,res)=>{
+    const { projectId } = req.query;
+    if (!req.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    try{
+      const project = await prisma.projects.findFirst({
+        where:{
+          id:projectId as string,
+          userId:req.userId
+        }
+      })
+      if(!project){
+        return res.status(404).json({ error: "Project not found" });
+      }
+      res.status(200).json({ "public_link":project.projectLink });
+    }
+    catch(error){
+      res.status(500).json({ error: "Error fetching public link" });
+    }
+  })
   export default project;
